@@ -1,4 +1,3 @@
-from typing import Iterable
 from mutmut.type_checking import TypeCheckingError
 from mutmut.type_checking import run_type_checker
 from typing import Any
@@ -55,7 +54,6 @@ import warnings
 
 import click
 import libcst as cst
-import libcst.matchers as m
 from rich.text import Text
 from setproctitle import setproctitle
 
@@ -902,6 +900,8 @@ def config_reader():
 def ensure_config_loaded():
     if mutmut.config is None:
         mutmut.config = load_config()
+        from mutmut.plugin_manager import get_plugin_manager
+        get_plugin_manager().hook.mutmut_configure(config=mutmut.config)
 
 
 def load_config():
@@ -1239,7 +1239,16 @@ def _run(mutant_names: tuple | list, max_children: None | int):
         exit_code = os.waitstatus_to_exitcode(wait_status)
         if mutmut.config.debug:
             print('    worker exit code', exit_code)
-        source_file_mutation_data_by_pid[pid].register_result(pid=pid, exit_code=exit_code)
+        sfmd = source_file_mutation_data_by_pid[pid]
+        key = sfmd.key_by_pid[pid]
+        sfmd.register_result(pid=pid, exit_code=exit_code)
+        from mutmut.plugin_manager import get_plugin_manager
+        get_plugin_manager().hook.mutmut_post_test(
+            mutant_name=key,
+            exit_code=exit_code,
+            status=status_by_exit_code[exit_code],
+            duration=sfmd.durations_by_key.get(key, 0.0),
+        )
 
     source_file_mutation_data_by_pid: dict[int, SourceFileMutationData] = {}  # many pids map to one MutationData
     running_children = 0
@@ -1275,6 +1284,14 @@ def _run(mutant_names: tuple | list, max_children: None | int):
 
             tests = mutmut.tests_by_mangled_function_name.get(mangled_name_from_mutant_name(mutant_name), [])
 
+            from mutmut.plugin_manager import get_plugin_manager
+            selected = get_plugin_manager().hook.mutmut_select_tests(
+                mutant_name=mutant_name,
+                default_tests=tests or [],
+            )
+            if selected is not None:
+                tests = selected
+
             if not tests:
                 m.exit_code_by_key[mutant_name] = 33
                 m.save()
@@ -1286,6 +1303,11 @@ def _run(mutant_names: tuple | list, max_children: None | int):
                 m.type_check_error_by_key[mutant_name] = failed_type_check_mutant.error.error_description
                 m.save()
                 continue
+
+            from mutmut.plugin_manager import get_plugin_manager
+            get_plugin_manager().hook.mutmut_pre_test(
+                mutant_name=mutant_name, tests=tests
+            )
 
             pid = os.fork()
             if not pid:
@@ -1337,6 +1359,13 @@ def _run(mutant_names: tuple | list, max_children: None | int):
     print_stats(source_file_mutation_data_by_path, force_output=True)
     print()
     print(f'{count_tried / t.total_seconds():.2f} mutations/second')
+
+    from mutmut.plugin_manager import get_plugin_manager
+    summary_stats = calculate_summary_stats(source_file_mutation_data_by_path)
+    get_plugin_manager().hook.mutmut_post_run(
+        stats=summary_stats,
+        source_file_mutation_data=source_file_mutation_data_by_path,
+    )
 
     if mutant_names:
         print()
@@ -1711,6 +1740,13 @@ def browse(show_killed):
 
     ResultBrowser().run()
 
+
+
+def _register_plugin_commands():
+    from mutmut.plugin_manager import get_plugin_manager
+    get_plugin_manager().hook.mutmut_register_commands(cli_group=cli)
+
+_register_plugin_commands()
 
 if __name__ == '__main__':
     cli()

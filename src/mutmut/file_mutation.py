@@ -26,6 +26,14 @@ def mutate_file_contents(filename: str, code: str, covered_lines: Union[set[int]
     :return: A tuple of (mutated code, list of mutant function names)"""
     module, mutations = create_mutations(code, covered_lines)
 
+    from mutmut.plugin_manager import get_plugin_manager
+
+    for result in get_plugin_manager().hook.mutmut_filter_mutations(
+        filename=filename, mutations=mutations
+    ):
+        if result is not None:
+            mutations = result
+
     return combine_mutations_to_source(module, mutations)
 
 def create_mutations(
@@ -38,7 +46,13 @@ def create_mutations(
     module = cst.parse_module(code)
 
     metadata_wrapper = MetadataWrapper(module)
-    visitor = MutationVisitor(mutation_operators, ignored_lines, covered_lines)
+    operators = list(mutation_operators)
+    from mutmut.plugin_manager import get_plugin_manager
+
+    for plugin_operators in get_plugin_manager().hook.mutmut_register_operators():
+        operators.extend(plugin_operators)
+
+    visitor = MutationVisitor(operators, ignored_lines, covered_lines)
     module = metadata_wrapper.visit(visitor)
 
     return module, visitor.mutations
@@ -98,9 +112,17 @@ class MutationVisitor(cst.CSTVisitor):
         self._operators = operators
         self._ignored_lines = ignore_lines
         self._covered_lines = covered_lines
+        from mutmut.plugin_manager import get_plugin_manager
+        self._pm = get_plugin_manager()
+        self._has_skip_node_plugin = bool(
+            self._pm.hook.mutmut_skip_node.get_hookimpls()
+        )
 
     def on_visit(self, node):
         if self._skip_node_and_children(node):
+            return False
+
+        if self._has_skip_node_plugin and self._pm.hook.mutmut_skip_node(node=node):
             return False
 
         if self._should_mutate_node(node):
