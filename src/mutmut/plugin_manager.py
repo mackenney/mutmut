@@ -1,3 +1,4 @@
+import os
 import warnings
 
 import pluggy
@@ -13,10 +14,11 @@ def get_plugin_manager() -> pluggy.PluginManager:
         return _pm
     _pm = pluggy.PluginManager("mutmut")
     _pm.add_hookspecs(MutmutHookSpec)
-    try:
-        _pm.load_setuptools_entrypoints("mutmut")
-    except Exception as e:
-        warnings.warn(f"Failed to load mutmut plugins: {e}")
+    if not os.environ.get("MUTMUT_DISABLE_PLUGIN_AUTOLOAD"):
+        try:
+            _pm.load_setuptools_entrypoints("mutmut")
+        except Exception as e:
+            warnings.warn(f"Failed to load mutmut plugins: {e}")
     return _pm
 
 
