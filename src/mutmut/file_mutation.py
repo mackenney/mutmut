@@ -267,8 +267,13 @@ def function_trampoline_arrangement(function: cst.FunctionDef, mutants: Iterable
     for i, mutant in enumerate(mutants):
         mutant_name = f'{mangled_name}_{i+1}'
         mutant_names.append(mutant_name)
-        mutated_method = function.with_changes(name=cst.Name(mutant_name))
-        mutated_method = deep_replace(mutated_method, mutant.original_node, mutant.mutated_node)
+        if mutant.original_node is function:
+            # Whole-function replacement (e.g., LLM operator)
+            mutated_method = mutant.mutated_node.with_changes(name=cst.Name(mutant_name))
+        else:
+            # Sub-node replacement (standard operators)
+            mutated_method = function.with_changes(name=cst.Name(mutant_name))
+            mutated_method = deep_replace(mutated_method, mutant.original_node, mutant.mutated_node)
         nodes.append(mutated_method) # type: ignore
 
     mutants_dict = list(cst.parse_module(create_trampoline_lookup(orig_name=name, mutants=mutant_names, class_name=class_name)).body)
