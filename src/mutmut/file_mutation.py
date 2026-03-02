@@ -18,6 +18,7 @@ class Mutation:
     original_node: cst.CSTNode
     mutated_node: cst.CSTNode
     contained_by_top_level_function: Union[cst.FunctionDef, None]
+    source: str = "builtin"
 
 
 def mutate_file_contents(filename: str, code: str, covered_lines: Union[set[int], None] = None) -> tuple[str, Sequence[str]]:
@@ -28,13 +29,20 @@ def mutate_file_contents(filename: str, code: str, covered_lines: Union[set[int]
 
     from mutmut.plugin_manager import get_plugin_manager
 
-    for result in get_plugin_manager().hook.mutmut_filter_mutations(
+    pm = get_plugin_manager()
+    for result in pm.hook.mutmut_filter_mutations(
         filename=filename, mutations=mutations
     ):
         if result is not None:
             mutations = result
 
-    return combine_mutations_to_source(module, mutations)
+    mutated_code, mutation_names, source_by_name = combine_mutations_to_source(module, mutations)
+
+    pm.hook.mutmut_mutations_created(
+        filename=filename, source_by_mutant_name=source_by_name
+    )
+
+    return mutated_code, mutation_names
 
 def create_mutations(
     code: str,
@@ -134,11 +142,13 @@ class MutationVisitor(cst.CSTVisitor):
     def _create_mutations(self, node: cst.CSTNode):
         for t, operator in self._operators:
             if isinstance(node, t):
+                source = getattr(operator, "__mutmut_source__", "builtin")
                 for mutated_node in operator(node):
                     mutation = Mutation(
                         original_node=node,
                         mutated_node=mutated_node,
                         contained_by_top_level_function=self.get_metadata(OuterFunctionProvider, node, None), # type: ignore
+                        source=source,
                     )
                     self.mutations.append(mutation)
 
@@ -191,16 +201,17 @@ trampoline_impl_cst = list(cst.parse_module(trampoline_impl).body)
 trampoline_impl_cst[-1] = trampoline_impl_cst[-1].with_changes(leading_lines = [cst.EmptyLine(), cst.EmptyLine()])
 
 
-def combine_mutations_to_source(module: cst.Module, mutations: Sequence[Mutation]) -> tuple[str, Sequence[str]]:
+def combine_mutations_to_source(module: cst.Module, mutations: Sequence[Mutation]) -> tuple[str, Sequence[str], dict[str, str]]:
     """Create mutated functions and trampolines for all mutations and compile them to a single source code.
-    
+
     :param module: The original parsed module
     :param mutations: Mutations that should be applied.
-    :return: Mutated code and list of mutation names"""
+    :return: Mutated code, list of mutation names, and source mapping"""
 
     # copy start of the module (in particular __future__ imports)
     result: list[MODULE_STATEMENT] = get_statements_until_func_or_class(module.body)
     mutation_names: list[str] = []
+    source_by_name: dict[str, str] = {}
 
     # statements we still need to potentially mutate and add to the result
     remaining_statements = module.body[len(result):]
@@ -220,9 +231,10 @@ def combine_mutations_to_source(module: cst.Module, mutations: Sequence[Mutation
             if not func_mutants:
                 result.append(func)
                 continue
-            nodes, mutant_names = function_trampoline_arrangement(func, func_mutants, class_name=None)
+            nodes, mutant_names, mutant_sources = function_trampoline_arrangement(func, func_mutants, class_name=None)
             result.extend(nodes)
             mutation_names.extend(mutant_names)
+            source_by_name.update(mutant_sources)
         elif isinstance(statement, cst.ClassDef):
             cls = statement
             if not isinstance(cls.body, cst.IndentedBlock):
@@ -235,23 +247,25 @@ def combine_mutations_to_source(module: cst.Module, mutations: Sequence[Mutation
                     if not isinstance(method, cst.FunctionDef) or not method_mutants:
                         mutated_body.append(method)
                         continue
-                    nodes, mutant_names = function_trampoline_arrangement(method, method_mutants, class_name=cls.name.value)
+                    nodes, mutant_names, mutant_sources = function_trampoline_arrangement(method, method_mutants, class_name=cls.name.value)
                     mutated_body.extend(nodes)
                     mutation_names.extend(mutant_names)
+                    source_by_name.update(mutant_sources)
 
                 result.append(cls.with_changes(body=cls.body.with_changes(body=mutated_body)))
         else:
             result.append(statement)
 
     mutated_module = module.with_changes(body=result)
-    return mutated_module.code, mutation_names
+    return mutated_module.code, mutation_names, source_by_name
 
-def function_trampoline_arrangement(function: cst.FunctionDef, mutants: Iterable[Mutation], class_name: Union[str, None]) -> tuple[Sequence[MODULE_STATEMENT], Sequence[str]]:
+def function_trampoline_arrangement(function: cst.FunctionDef, mutants: Iterable[Mutation], class_name: Union[str, None]) -> tuple[Sequence[MODULE_STATEMENT], Sequence[str], dict[str, str]]:
     """Create mutated functions and a trampoline that switches between original and mutated versions.
-    
-    :return: A tuple of (nodes, mutant names)"""
+
+    :return: A tuple of (nodes, mutant names, source mapping)"""
     nodes: list[MODULE_STATEMENT] = []
     mutant_names: list[str] = []
+    mutant_sources: dict[str, str] = {}
 
     name = function.name.value
     mangled_name = mangle_function_name(name=name, class_name=class_name) + '__mutmut'
@@ -267,6 +281,7 @@ def function_trampoline_arrangement(function: cst.FunctionDef, mutants: Iterable
     for i, mutant in enumerate(mutants):
         mutant_name = f'{mangled_name}_{i+1}'
         mutant_names.append(mutant_name)
+        mutant_sources[mutant_name] = mutant.source
         if mutant.original_node is function:
             # Whole-function replacement (e.g., LLM operator)
             mutated_method = mutant.mutated_node.with_changes(name=cst.Name(mutant_name))
@@ -281,7 +296,7 @@ def function_trampoline_arrangement(function: cst.FunctionDef, mutants: Iterable
 
     nodes.extend(mutants_dict)
 
-    return nodes, mutant_names
+    return nodes, mutant_names, mutant_sources
 
 
 def create_trampoline_wrapper(function: cst.FunctionDef, mangled_name: str, class_name: str | None) -> cst.FunctionDef:

@@ -41,7 +41,7 @@ def test_whole_function_mutation_applied():
         contained_by_top_level_function=original_func,
     )
 
-    nodes, mutant_names = function_trampoline_arrangement(
+    nodes, mutant_names, _ = function_trampoline_arrangement(
         original_func, [mutation], class_name=None
     )
 
@@ -85,7 +85,7 @@ def test_subnode_mutation_still_works():
         contained_by_top_level_function=original_func,
     )
 
-    nodes, mutant_names = function_trampoline_arrangement(
+    nodes, mutant_names, _ = function_trampoline_arrangement(
         original_func, [mutation], class_name=None
     )
 
@@ -119,7 +119,7 @@ def test_multiple_whole_function_mutations():
         for src in variants
     ]
 
-    nodes, mutant_names = function_trampoline_arrangement(
+    nodes, mutant_names, _ = function_trampoline_arrangement(
         original_func, mutations, class_name=None
     )
 
@@ -176,7 +176,7 @@ def test_mixed_subnode_and_whole_function_mutations():
     )
 
     # Pass both types interleaved: sub-node first, whole-function second
-    nodes, mutant_names = function_trampoline_arrangement(
+    nodes, mutant_names, _ = function_trampoline_arrangement(
         original_func, [subnode_mutation, whole_mutation], class_name=None
     )
 

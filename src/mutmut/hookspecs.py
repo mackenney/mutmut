@@ -26,6 +26,11 @@ class MutmutHookSpec:
         """Filter or augment mutations after generation for a file."""
 
     @hookspec
+    def mutmut_mutations_created(self, filename, source_by_mutant_name):
+        """Called after mutations are created for a file.
+        source_by_mutant_name: dict mapping mutant name to source ('builtin' or 'llm')."""
+
+    @hookspec
     def mutmut_pre_test(self, mutant_name, tests):
         """Called before testing a mutant (before fork)."""
 
